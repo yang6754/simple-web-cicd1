@@ -85,38 +85,29 @@ jobs:
           name: docker-image
           path: ./
 
-      - name: 传输 compose + 镜像到服务器
-        uses: appleboy/scp-action@v0.1.7
-        with:
-          host: ${{ secrets.SSH_HOST }}
-          username: ${{ secrets.SSH_USERNAME }}
-          password: ${{ secrets.SSH_PASSWORD }}
-          source: "docker-compose.prod.yml,simple-web.tar.gz"
-          target: "/opt/simple-web/"
-          strip_components: 0
-
-      - name: 加载镜像并启动服务
-        uses: appleboy/ssh-action@v1.0.3
-        with:
-          host: ${{ secrets.SSH_HOST }}
-          username: ${{ secrets.SSH_USERNAME }}
-          password: ${{ secrets.SSH_PASSWORD }}
-          script: |
+      - name: 安装 sshpass 和部署
+        run: |
+          sudo apt-get update && sudo apt-get install -y sshpass
+          mkdir -p /tmp/deploy
+          cp docker-compose.prod.yml /tmp/deploy/
+          cp simple-web.tar.gz /tmp/deploy/
+          
+          echo "=== [1/5] SSH 传输文件到服务器 ==="
+          sshpass -p "${{ secrets.SSH_PASSWORD }}" scp -o StrictHostKeyChecking=no -r /tmp/deploy/* ${{ secrets.SSH_USERNAME }}@${{ secrets.SSH_HOST }}:/opt/simple-web/
+          
+          echo "=== [2/5] SSH 执行部署脚本 ==="
+          sshpass -p "${{ secrets.SSH_PASSWORD }}" ssh -o StrictHostKeyChecking=no ${{ secrets.SSH_USERNAME }}@${{ secrets.SSH_HOST }} '
             set -e
             cd /opt/simple-web
 
-            echo "=== [1/5] 加载 Docker 镜像 ==="
+            echo "=== [3/5] 加载 Docker 镜像 ==="
             gunzip -f simple-web.tar.gz
             docker load -i simple-web.tar
             rm -f simple-web.tar
 
-            echo "=== [2/5] 复制 compose 文件 ==="
-            cp docker-compose.prod.yml docker-compose.yml
-
-            echo "=== [3/5] 停止旧容器 ==="
+            echo "=== [4/5] 停止旧容器并启动新容器 ==="
             docker compose down --remove-orphans || true
-
-            echo "=== [4/5] 启动新容器 ==="
+            cp docker-compose.prod.yml docker-compose.yml
             docker compose up -d
 
             echo "=== [5/5] 健康检查 ==="
@@ -125,13 +116,15 @@ jobs:
             if [ "$HTTP_CODE" = "200" ]; then
               echo "✅ 部署成功！HTTP: $HTTP_CODE"
             else
-              echo "⚠️  返回 $HTTP_CODE，查看日志："
+              echo "⚠️ 返回 $HTTP_CODE，查看日志："
               docker compose logs --tail=20
+              exit 1
             fi
 
             echo ""
             echo "=== 运行状态 ==="
             docker compose ps
+          '
 
   # ============================================
   # Job 4: 通知
